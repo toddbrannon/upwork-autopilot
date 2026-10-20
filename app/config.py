@@ -21,7 +21,9 @@ UPWORK_CLIENT_ID = os.environ.get("UPWORK_CLIENT_ID", "")
 UPWORK_CLIENT_SECRET = os.environ.get("UPWORK_CLIENT_SECRET", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
 INGEST_WEBHOOK_SECRET = os.environ.get("INGEST_WEBHOOK_SECRET", "")
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+# Render sets RENDER_EXTERNAL_URL to the service's real address; it wins over a hand-typed value.
+PUBLIC_BASE_URL = (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_BASE_URL")
+                   or "http://localhost:8000").rstrip("/")
 
 SCORER_MODEL = os.environ.get("SCORER_MODEL", "claude-haiku-5-5")
 DRAFTER_MODEL = os.environ.get("DRAFTER_MODEL", "claude-sonnet-5-5")
