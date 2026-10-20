@@ -13,8 +13,8 @@ followup_days: 5               # ask about the outcome this many days after you 
 
 filters:
   payment_verified: true
-  min_hourly: 40               # hourly jobs: max of the client's range must reach this
-  min_fixed_budget: 500        # fixed-price jobs below this are dropped (unstated budgets pass)
+  min_hourly: 50               # hourly floor: skip if the client's range tops out below this
+  min_fixed_budget: 500        # skip fixed-price jobs below this (unstated budgets pass)
   max_proposals: 15
   min_client_hires: 1          # a client passes with EITHER this many hires...
   min_client_spent: 1000       # ...OR this much total spend

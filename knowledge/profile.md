@@ -58,6 +58,3 @@ BA, Business Economics, Ashford University (2009-2011)
 - Healthcare practice intelligence live demo: northview-dashboard.replit.app
 - HVAC technician scorecard walkthrough: youtu.be/EQRst78ZFzs
 - Construction budget and payment tool walkthrough: youtu.be/eM7jdOOnAbo
-
-## Jobs I do NOT want
-- [Todd to confirm]
