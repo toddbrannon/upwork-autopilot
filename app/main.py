@@ -230,7 +230,9 @@ def auth(creds: HTTPBasicCredentials = Depends(security)) -> None:
 @app.get("/health")
 def health():
     return {"ok": True, "upwork_connected": upwork.connected(), "slack": slack.configured(),
-            "claude": ai.client is not None, "last_poll_ok": db.kv_get("last_poll_ok")}
+            "claude": ai.client is not None, "last_poll_ok": db.kv_get("last_poll_ok"),
+            "knowledge_files": sorted(str(p.relative_to(KNOWLEDGE_DIR)) for p in KNOWLEDGE_DIR.rglob("*.md")),
+            "min_hourly": load_rules().get("filters", {}).get("min_hourly")}
 
 
 @app.post("/slack/interact")
