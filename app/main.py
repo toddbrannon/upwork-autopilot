@@ -73,6 +73,7 @@ async def try_job(text: str) -> None:
     title = (titled[0] if titled else body[0] if body else "Pasted job")[:120]
     job = upwork.normalize({"id": "try-" + hashlib.sha1(text.encode()).hexdigest()[:10], "title": title,
                             "description": text, "url": "https://www.upwork.com/nx/find-work/"}, source="manual")
+    db.mark_seen(job["id"], "manual")
     db.save_job(job)
     try:
         scored = await ai.score(job)
@@ -86,7 +87,24 @@ async def try_job(text: str) -> None:
         await slack.post(f"Test: {title}", blocks)
     except Exception as e:  # noqa: BLE001
         log.exception("try_job failed")
+        db.log(job["id"], "error", {"error": str(e)[:500]})
         await slack.post(f":warning: Test run failed: {str(e)[:300]}")
+
+
+async def check_claude_key() -> None:
+    """Free call that proves the API key works, so a bad key shows up at boot, not on the first job."""
+    if not ai.client:
+        db.kv_set("claude_key_check", "missing")
+        return
+    try:
+        await ai.client.models.list(limit=1)
+        db.kv_set("claude_key_check", "ok")
+    except Exception as e:  # noqa: BLE001
+        status = getattr(e, "status_code", None)
+        result = "invalid (Anthropic rejected the key)" if status == 401 else f"error: {str(e)[:120]}"
+        db.kv_set("claude_key_check", result)
+        await slack.post(f":warning: Claude API key check failed: {result}. "
+                         "Paste a fresh key into Render → Environment → ANTHROPIC_API_KEY.")
 
 
 async def ingest(jobs: list[dict]) -> int:
@@ -238,7 +256,8 @@ def command_reply(text: str) -> str:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     db.init()
-    tasks = [asyncio.create_task(poll_loop()), asyncio.create_task(maintenance_loop())]
+    tasks = [asyncio.create_task(poll_loop()), asyncio.create_task(maintenance_loop()),
+             asyncio.create_task(check_claude_key())]
     if slack.configured():
         asyncio.create_task(slack.post(":rocket: Upwork Autopilot is running. Try `/autopilot status`."))
     yield
@@ -260,7 +279,9 @@ def health():
     return {"ok": True, "upwork_connected": upwork.connected(), "slack": slack.configured(),
             "claude": ai.client is not None, "last_poll_ok": db.kv_get("last_poll_ok"),
             "knowledge_files": sorted(str(p.relative_to(KNOWLEDGE_DIR)) for p in KNOWLEDGE_DIR.rglob("*.md")),
-            "min_hourly": load_rules().get("filters", {}).get("min_hourly")}
+            "min_hourly": load_rules().get("filters", {}).get("min_hourly"),
+            "searches": len(load_rules().get("searches", [])),
+            "claude_key": db.kv_get("claude_key_check", "not checked")}
 
 
 @app.post("/slack/interact")
@@ -342,7 +363,7 @@ def dashboard():
     up, last = upwork.connected(), db.kv_get("last_poll_ok")
     status = (f'<span class="pill {"ok" if up else "bad"}">Upwork {"connected" if up else "not connected"}</span> '
               f'<span class="pill {"ok" if slack.configured() else "bad"}">Slack</span> '
-              f'<span class="pill {"ok" if ai.client else "bad"}">Claude</span> '
+              f'<span class="pill {"ok" if db.kv_get("claude_key_check") == "ok" else "bad"}">Claude key: {e(str(db.kv_get("claude_key_check", "not checked")))}</span> '
               f'<span class="pill">last poll {f"{int(time.time() - last)}s ago" if last else "never"}</span>')
     connect = '' if up else ' <a class="btn" href="/oauth/upwork/start">Connect Upwork</a>'
     c = db.counts_since(time.time() - 86400)
@@ -359,13 +380,20 @@ def dashboard():
 drafted {c.get('drafted', 0)} · approved {c.get('approved', 0)} · sent {c.get('sent', 0)} · errors {c.get('error', 0)}</p>
 <h2>Try a job post</h2><form method=post action=/try><textarea name=post rows=6 placeholder="Paste any Upwork job post. The score and draft land in Slack in ~30 seconds."></textarea><p><button>Score and draft it</button></p></form>
 <h2>Recent jobs</h2><table><tr><th>Job</th><th>Score</th><th>Stage</th><th>Why</th></tr>{''.join(rows)}</table>
-<h2>Rules</h2><form method=post action=/rules><textarea name=rules rows=28>{e(RULES_PATH.read_text())}</textarea><p><button>Save rules</button></p></form>
+<h2>Rules</h2><form method=post action=/rules><input type=hidden name=base value="{_rules_sha()}"><textarea name=rules rows=28>{e(RULES_PATH.read_text())}</textarea><p><button>Save rules</button></p></form>
 <h2>Knowledge base</h2><ul>{kfiles}</ul><form method=post action=/knowledge/new><input name=path placeholder="case-studies/new-project.md"> <button>Add file</button></form>""")
 
 
+def _rules_sha() -> str:
+    return hashlib.sha256(RULES_PATH.read_bytes()).hexdigest()[:16]
+
+
 @app.post("/rules", dependencies=[Depends(auth)])
-def update_rules(rules: str = Form(...)):
+def update_rules(rules: str = Form(...), base: str = Form("")):
     import yaml
+    if base != _rules_sha():
+        return _page('<p>The rules changed since you opened this page, so nothing was saved. '
+                     '<a href="/">Reload the dashboard</a> and make your edit again.</p>')
     try:
         save_rules(yaml.safe_load(rules))
     except yaml.YAMLError as err:

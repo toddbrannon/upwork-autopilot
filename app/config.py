@@ -39,10 +39,19 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+OLD_PLACEHOLDER_SEARCHES = [["automation OR integration", "AI agent OR LLM OR Claude"]]
+
+
 def _untouched(disk: Path, seeded: dict, rel: str) -> bool:
     """A disk file is safe to replace if it is exactly what we last seeded, or still a template."""
     if seeded.get(rel) == _sha(disk):
         return True
+    if rel == "rules.yaml":  # a re-saved copy of the first-boot placeholder rules still counts as a template
+        try:
+            if (yaml.safe_load(disk.read_text()) or {}).get("searches") in OLD_PLACEHOLDER_SEARCHES:
+                return True
+        except yaml.YAMLError:
+            return False
     return rel not in seeded and any(m in disk.read_text(errors="ignore") for m in TEMPLATE_MARKERS)
 
 
