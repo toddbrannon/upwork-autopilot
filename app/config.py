@@ -15,14 +15,14 @@ DB_PATH = DATA_DIR / "autopilot.sqlite3"
 RULES_PATH = DATA_DIR / "rules.yaml"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "")
-UPWORK_CLIENT_ID = os.environ.get("UPWORK_CLIENT_ID", "")
-UPWORK_CLIENT_SECRET = os.environ.get("UPWORK_CLIENT_SECRET", "")
-DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
-INGEST_WEBHOOK_SECRET = os.environ.get("INGEST_WEBHOOK_SECRET", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip("\'\"")
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip().strip("\'\"")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "").strip().strip("\'\"")
+SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "").strip().strip("\'\"")
+UPWORK_CLIENT_ID = os.environ.get("UPWORK_CLIENT_ID", "").strip().strip("\'\"")
+UPWORK_CLIENT_SECRET = os.environ.get("UPWORK_CLIENT_SECRET", "").strip().strip("\'\"")
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip().strip("\'\"")
+INGEST_WEBHOOK_SECRET = os.environ.get("INGEST_WEBHOOK_SECRET", "").strip().strip("\'\"")
 # Render sets RENDER_EXTERNAL_URL to the service's real address; it wins over a hand-typed value.
 PUBLIC_BASE_URL = (os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_BASE_URL")
                    or "http://localhost:8000").rstrip("/")
