@@ -1,4 +1,6 @@
 """Settings from environment + editable rules from config/rules.yaml (copied to the disk on first boot)."""
+import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
@@ -29,16 +31,56 @@ SCORER_MODEL = os.environ.get("SCORER_MODEL", "claude-haiku-5-5")
 DRAFTER_MODEL = os.environ.get("DRAFTER_MODEL", "claude-sonnet-5-5")
 
 
-def _seed_disk() -> None:
-    """First boot: copy the repo's starter rules and knowledge base onto the persistent disk.
-    After that, the disk copies are the live ones (edited from the dashboard or by you)."""
-    if not RULES_PATH.exists():
-        shutil.copy(ROOT / "config" / "rules.yaml", RULES_PATH)
-    if not KNOWLEDGE_DIR.exists():
-        shutil.copytree(ROOT / "knowledge", KNOWLEDGE_DIR)
+SEED_MANIFEST = DATA_DIR / ".seeded.json"
+TEMPLATE_MARKERS = ("<!-- TEMPLATE", "# PLACEHOLDERS")
 
 
-_seed_disk()
+def _sha(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def _untouched(disk: Path, seeded: dict, rel: str) -> bool:
+    """A disk file is safe to replace if it is exactly what we last seeded, or still a template."""
+    if seeded.get(rel) == _sha(disk):
+        return True
+    return rel not in seeded and any(m in disk.read_text(errors="ignore") for m in TEMPLATE_MARKERS)
+
+
+def sync_from_repo() -> list[str]:
+    """Push repo rules + knowledge to the disk on every boot, never overwriting a file you edited
+    in the dashboard. Files removed from the repo are removed from the disk only if untouched."""
+    seeded = json.loads(SEED_MANIFEST.read_text()) if SEED_MANIFEST.exists() else {}
+    pairs = {"rules.yaml": (ROOT / "config" / "rules.yaml", RULES_PATH)}
+    for src in (ROOT / "knowledge").rglob("*.md"):
+        rel = "knowledge/" + str(src.relative_to(ROOT / "knowledge"))
+        pairs[rel] = (src, KNOWLEDGE_DIR / src.relative_to(ROOT / "knowledge"))
+    changed = []
+    for rel, (src, dst) in pairs.items():
+        if dst.exists() and (_sha(dst) == _sha(src) or not _untouched(dst, seeded, rel)):
+            if _sha(dst) == _sha(src):
+                seeded[rel] = _sha(dst)
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, dst)
+        seeded[rel] = _sha(dst)
+        changed.append(rel)
+    for rel in [r for r in seeded if r not in pairs]:
+        dst = DATA_DIR / rel if rel.startswith("knowledge/") else RULES_PATH
+        if dst.exists() and _untouched(dst, seeded, rel):
+            dst.unlink()
+            changed.append(f"removed {rel}")
+        seeded.pop(rel)
+    # template files seeded before this sync existed and since deleted from the repo
+    for dst in KNOWLEDGE_DIR.rglob("*.md") if KNOWLEDGE_DIR.exists() else []:
+        rel = "knowledge/" + str(dst.relative_to(KNOWLEDGE_DIR))
+        if rel not in pairs and rel not in seeded and _untouched(dst, seeded, rel):
+            dst.unlink()
+            changed.append(f"removed {rel}")
+    SEED_MANIFEST.write_text(json.dumps(seeded, indent=1))
+    return changed
+
+
+SYNCED = sync_from_repo()
 
 
 def load_rules() -> dict:
