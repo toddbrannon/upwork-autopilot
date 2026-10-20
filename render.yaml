@@ -22,10 +22,12 @@ services:
       # Secrets: values are pasted by you in the Render dashboard, never committed.
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: TELEGRAM_CHAT_ID
-        sync: false
+      - key: SLACK_BOT_TOKEN
+        sync: false          # xoxb-... from the Slack app's OAuth & Permissions page
+      - key: SLACK_SIGNING_SECRET
+        sync: false          # Slack app → Basic Information → Signing Secret
+      - key: SLACK_CHANNEL_ID
+        sync: false          # e.g. C0123ABCD; the channel the bot posts job cards in
       - key: UPWORK_CLIENT_ID
         sync: false
       - key: UPWORK_CLIENT_SECRET

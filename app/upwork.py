@@ -118,7 +118,7 @@ def _num(x):
 
 
 def normalize(n: dict, source: str) -> dict:
-    """Common job shape used by filters, scorer, drafter, and Telegram. Also accepts webhook payloads."""
+    """Common job shape used by filters, scorer, drafter, and Slack. Also accepts webhook payloads."""
     c = n.get("client") or {}
     cipher = n.get("ciphertext") or n.get("id")
     contract = ((n.get("job") or {}).get("contractTerms") or {}).get("contractType") or n.get("job_type")

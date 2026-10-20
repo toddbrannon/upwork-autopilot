@@ -1,23 +1,25 @@
 """Upwork Autopilot: one always-on service.
 
-Loops: poll Upwork -> filter -> score -> draft -> Telegram; Telegram long-poll for your taps;
-hourly maintenance (24h purge, 8am digest, outcome follow-ups). Plus a small password-protected dashboard.
+Loops: poll Upwork -> filter -> score -> draft -> Slack card; hourly maintenance (24h purge,
+8am digest, outcome follow-ups). Slack buttons and /autopilot come back through /slack/*.
+Plus a small password-protected dashboard.
 """
 import asyncio
 import datetime as dt
 import html
+import json
 import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import ai, db, filters, telegram, upwork
-from .config import (DASHBOARD_PASSWORD, INGEST_WEBHOOK_SECRET, KNOWLEDGE_DIR, RULES_PATH, TELEGRAM_CHAT_ID,
-                     load_rules, save_rules)
+from . import ai, db, filters, slack, upwork
+from .config import DASHBOARD_PASSWORD, INGEST_WEBHOOK_SECRET, KNOWLEDGE_DIR, RULES_PATH, load_rules, save_rules
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("main")
@@ -40,21 +42,21 @@ async def process(job: dict) -> None:
         db.log(job["id"], "filtered", {"reason": reason})
         return
     if not ai.client:
-        await telegram.send(telegram.job_card(job, None, None))
+        await slack.post(job["title"], slack.job_blocks(job, None, None))
         return
     try:
         async with DRAFT_SLOTS:
             scored = await ai.score(job)
             db.log(job["id"], "scored", scored)
-            threshold = rules.get("score_threshold", 70)
-            if scored["score"] < threshold:
+            if scored["score"] < rules.get("score_threshold", 70):
                 return
             if drafts_today() >= rules.get("max_drafts_per_day", 40):
-                await telegram.send(telegram.job_card(job, scored, None) + "\n\n<i>Daily draft cap reached; not drafted.</i>")
+                await slack.post(job["title"], slack.job_blocks(job, scored, None) +
+                                 [slack._text("_Daily draft cap reached; not drafted._")])
                 return
             drafted = await ai.draft(job, scored)
             db.log(job["id"], "drafted", drafted)
-        await telegram.send(telegram.job_card(job, scored, drafted), telegram.decision_buttons(job["id"]))
+        await slack.post(f"Score {scored['score']}: {job['title']}", slack.job_blocks(job, scored, drafted))
     except Exception as e:  # noqa: BLE001 — one bad job must never stop the loop
         log.exception("process failed for %s", job["id"])
         db.log(job["id"], "error", {"error": str(e)[:500]})
@@ -85,145 +87,122 @@ async def poll_loop() -> None:
                 failures += 1
                 log.exception("poll failed")
                 if failures == 3:
-                    await telegram.send(f"⚠️ Upwork polling failed 3 times in a row: {html.escape(str(e))[:300]}")
+                    await slack.post(f":warning: Upwork polling failed 3 times in a row: {str(e)[:300]}")
         await asyncio.sleep(max(45, int(rules.get("poll_seconds", 75))))
-
-
-async def telegram_loop() -> None:
-    offset = db.kv_get("tg_offset", 0)
-    while telegram.configured():
-        try:
-            body = await telegram.call("getUpdates", offset=offset, timeout=50,
-                                       allowed_updates=["message", "callback_query"])
-            for u in body.get("result", []):
-                offset = u["update_id"] + 1
-                db.kv_set("tg_offset", offset)
-                await handle_update(u)
-        except Exception:  # noqa: BLE001
-            log.exception("telegram loop")
-            await asyncio.sleep(5)
 
 
 async def maintenance_loop() -> None:
     while True:
-        purged = db.purge_old_jobs()
-        if purged:
-            log.info("purged %d job records older than 24h", purged)
-        now = dt.datetime.now()
-        today = now.date().isoformat()
-        if now.hour >= load_rules().get("digest_hour", 8) and db.kv_get("digest_sent") != today:
-            db.kv_set("digest_sent", today)
-            await send_digest()
-        due = [f for f in db.kv_get("followups", []) if f["at"] <= time.time()]
-        if due:
-            db.kv_set("followups", [f for f in db.kv_get("followups", []) if f["at"] > time.time()])
-            for f in due:
-                await telegram.send(f"How did this one go?\n<b>{html.escape(f['title'])}</b>",
-                                    telegram.outcome_buttons(f["job_id"]))
+        try:
+            purged = db.purge_old_jobs()
+            if purged:
+                log.info("purged %d job records older than 24h", purged)
+            now = dt.datetime.now()
+            today = now.date().isoformat()
+            if now.hour >= load_rules().get("digest_hour", 8) and db.kv_get("digest_sent") != today:
+                db.kv_set("digest_sent", today)
+                await send_digest()
+            pending = db.kv_get("followups", [])
+            due = [f for f in pending if f["at"] <= time.time()]
+            if due:
+                db.kv_set("followups", [f for f in pending if f["at"] > time.time()])
+                for f in due:
+                    await slack.post("How did this one go?", slack.outcome_blocks(f["job_id"], f["title"]))
+        except Exception:  # noqa: BLE001
+            log.exception("maintenance")
         await asyncio.sleep(600)
 
 
-async def send_digest() -> None:
+def digest_text() -> str:
     day = db.counts_since(time.time() - 86400)
     bands = db.score_band_stats(time.time() - 28 * 86400)
-    lines = ["<b>Daily digest</b> (last 24h)",
+    lines = ["*Daily digest* (last 24h)",
              f"Seen {day.get('seen', 0)} · filtered out {day.get('filtered', 0)} · scored {day.get('scored', 0)} · "
              f"drafted {day.get('drafted', 0)} · approved {day.get('approved', 0)} · sent {day.get('sent', 0)} · "
              f"skipped {day.get('skipped', 0)} · errors {day.get('error', 0)}"]
     if bands:
-        lines.append("\n<b>Last 28 days by score</b>")
+        lines.append("\n*Last 28 days by score*")
         for b in bands:
             rate = f"{100 * b['replied'] / b['sent']:.0f}% reply" if b["sent"] else "—"
             lines.append(f"{b['band']}: {b['scored']} scored, {b['sent']} sent, {rate}, {b['hired']} hired")
-    lines.append(f"\nThreshold {load_rules().get('score_threshold', 70)} · change with /threshold N")
-    await telegram.send("\n".join(lines))
+    lines.append(f"\nThreshold {load_rules().get('score_threshold', 70)} · change with `/autopilot threshold 75`")
+    return "\n".join(lines)
 
 
-# ---------------------------------------------------------------- telegram handlers
-
-async def handle_update(u: dict) -> None:
-    if "callback_query" in u:
-        q = u["callback_query"]
-        if str(q["message"]["chat"]["id"]) != str(TELEGRAM_CHAT_ID):
-            return
-        await telegram.call("answerCallbackQuery", callback_query_id=q["id"])
-        await handle_button(q["data"])
-        return
-    m = u.get("message") or {}
-    chat, text = str(m.get("chat", {}).get("id")), (m.get("text") or "").strip()
-    if text.startswith("/start"):
-        await telegram.send(f"Hi. Your chat ID is <code>{chat}</code>. Paste it into Render as TELEGRAM_CHAT_ID.",
-                            chat_id=chat)
-        return
-    if chat != str(TELEGRAM_CHAT_ID):
-        return
-    if text.startswith("/threshold"):
-        rules = load_rules()
-        try:
-            rules["score_threshold"] = int(text.split()[1])
-            save_rules(rules)
-            await telegram.send(f"Threshold set to {rules['score_threshold']}.")
-        except (IndexError, ValueError):
-            await telegram.send("Usage: /threshold 75")
-    elif text in ("/pause", "/resume"):
-        db.kv_set("paused", text == "/pause")
-        await telegram.send("Paused." if text == "/pause" else "Resumed.")
-    elif text == "/status":
-        last = db.kv_get("last_poll_ok")
-        ago = f"{int(time.time() - last)}s ago" if last else "never"
-        await telegram.send(f"Upwork {'connected' if upwork.connected() else 'NOT connected'} · last poll {ago} · "
-                            f"{'paused' if db.kv_get('paused') else 'running'} · drafts today {drafts_today()}")
-    elif text == "/digest":
-        await send_digest()
-    elif (job_id := db.kv_get("pending_edit")):
-        db.kv_set("pending_edit", None)
-        await redraft(job_id, text)
-    else:
-        await telegram.send("Commands: /status /digest /threshold N /pause /resume. Tap Edit on a draft to revise it.")
+async def send_digest() -> None:
+    await slack.post("Daily digest", [slack._text(digest_text())])
 
 
-async def redraft(job_id: str, instruction: str) -> None:
-    job, scored, prev = db.get_job(job_id), db.latest(job_id, "scored"), db.latest(job_id, "drafted")
-    if not (job and scored and prev):
-        await telegram.send("That job's details have expired (24h rule). Open it on Upwork directly.")
-        return
-    lessons = db.kv_get("edit_lessons", [])
-    db.kv_set("edit_lessons", (lessons + [instruction])[-30:])
-    await telegram.send("Redrafting…")
-    drafted = await ai.draft(job, scored, instructions=instruction, previous=prev.get("proposal"))
-    db.log(job_id, "edited", {"instruction": instruction})
-    db.log(job_id, "drafted", drafted)
-    await telegram.send(telegram.job_card(job, scored, drafted), telegram.decision_buttons(job_id))
+# ---------------------------------------------------------------- slack actions
 
-
-async def handle_button(data: str) -> None:
-    kind, _, rest = data.partition(":")
-    if kind == "oc":
-        result, _, job_id = rest.partition(":")
-        db.log(job_id, "outcome", {"result": result})
-        await telegram.send(f"Logged: {result}.")
-        return
-    job_id = rest
+async def on_action(payload: dict) -> None:
+    act = payload["actions"][0]
+    action, job_id = act["action_id"], act.get("value", "")
+    channel = payload["channel"]["id"]
+    ts = payload["container"]["message_ts"]
+    blocks = payload["message"].get("blocks", [])
+    thread = payload["message"].get("thread_ts") or ts
     job, drafted = db.get_job(job_id), db.latest(job_id, "drafted")
-    if kind == "ap":
+
+    if action == "approve":
         db.log(job_id, "approved")
         url = job["url"] if job else f"https://www.upwork.com/jobs/{job_id}"
-        await telegram.send(f'<a href="{html.escape(url)}">Open the job on Upwork</a> · bid '
-                            f'{html.escape(str((drafted or {}).get("bid")))}\nTap the text below to copy it:')
-        await telegram.send(f"<code>{html.escape((drafted or {}).get('proposal', ''))}</code>",
-                            [[("📨 I sent it", f"st:{job_id}")]])
-    elif kind == "ed":
-        db.kv_set("pending_edit", job_id)
-        await telegram.send("What should change? Reply in plain words, e.g. <i>shorter, lead with the Shopify result</i>.")
-    elif kind == "sk":
+        await slack.mark(channel, ts, blocks, ":white_check_mark: Approved")
+        await slack.post("Ready to send", slack.approved_blocks(job_id, url, drafted or {}), thread_ts=thread)
+    elif action == "edit":
+        await slack.call("views.open", trigger_id=payload["trigger_id"], view=slack.edit_modal(job_id, channel, ts))
+    elif action == "skip":
         db.log(job_id, "skipped")
-        await telegram.send("Skipped.")
-    elif kind == "st":
+        await slack.mark(channel, ts, blocks, ":fast_forward: Skipped")
+    elif action == "sent":
         db.log(job_id, "sent")
         days = load_rules().get("followup_days", 5)
         db.kv_set("followups", db.kv_get("followups", []) + [
             {"job_id": job_id, "title": (job or {}).get("title", job_id), "at": time.time() + days * 86400}])
-        await telegram.send(f"Logged as sent. I'll ask how it went in {days} days.")
+        await slack.call("chat.update", channel=channel, ts=ts, text="Sent",
+                         blocks=[b for b in blocks if b.get("type") != "actions"] + [
+                             {"type": "context", "elements": [{"type": "mrkdwn",
+                              "text": f":outbox_tray: Sent. I'll ask how it went in {days} days."}]}])
+    elif action.startswith("outcome_"):
+        result = action.removeprefix("outcome_")
+        db.log(job_id, "outcome", {"result": result})
+        await slack.call("chat.update", channel=channel, ts=ts, text=f"Logged: {result}",
+                         blocks=[blocks[0], {"type": "context", "elements": [
+                             {"type": "mrkdwn", "text": f"Logged: *{result}*"}]}])
+
+
+async def on_redraft(job_id: str, channel: str, ts: str, instruction: str) -> None:
+    job, scored, prev = db.get_job(job_id), db.latest(job_id, "scored"), db.latest(job_id, "drafted")
+    if not (job and scored and prev):
+        await slack.post("That job's details have expired (24h rule). Open it on Upwork directly.", thread_ts=ts)
+        return
+    db.kv_set("edit_lessons", (db.kv_get("edit_lessons", []) + [instruction])[-30:])
+    drafted = await ai.draft(job, scored, instructions=instruction, previous=prev.get("proposal"))
+    db.log(job_id, "edited", {"instruction": instruction})
+    db.log(job_id, "drafted", drafted)
+    await slack.post(f"Revised: {job['title']}", slack.job_blocks(job, scored, drafted), thread_ts=ts)
+
+
+def command_reply(text: str) -> str:
+    args = text.split()
+    cmd = args[0].lower() if args else "help"
+    if cmd == "threshold" and len(args) == 2 and args[1].isdigit():
+        rules = load_rules()
+        rules["score_threshold"] = int(args[1])
+        save_rules(rules)
+        return f"Threshold set to {args[1]}."
+    if cmd in ("pause", "resume"):
+        db.kv_set("paused", cmd == "pause")
+        return "Paused." if cmd == "pause" else "Resumed."
+    if cmd == "status":
+        last = db.kv_get("last_poll_ok")
+        ago = f"{int(time.time() - last)}s ago" if last else "never"
+        return (f"Upwork {'connected' if upwork.connected() else '*not connected*'} · last poll {ago} · "
+                f"{'paused' if db.kv_get('paused') else 'running'} · drafts today {drafts_today()} · "
+                f"threshold {load_rules().get('score_threshold', 70)}")
+    if cmd == "digest":
+        return digest_text()
+    return "`/autopilot status` · `digest` · `threshold 75` · `pause` · `resume`"
 
 
 # ---------------------------------------------------------------- web
@@ -232,8 +211,8 @@ async def handle_button(data: str) -> None:
 async def lifespan(_: FastAPI):
     db.init()
     tasks = [asyncio.create_task(poll_loop()), asyncio.create_task(maintenance_loop())]
-    if telegram.configured():
-        tasks.append(asyncio.create_task(telegram_loop()))
+    if slack.configured():
+        asyncio.create_task(slack.post(":rocket: Upwork Autopilot is running. Try `/autopilot status`."))
     yield
     for t in tasks:
         t.cancel()
@@ -250,8 +229,32 @@ def auth(creds: HTTPBasicCredentials = Depends(security)) -> None:
 
 @app.get("/health")
 def health():
-    return {"ok": True, "upwork_connected": upwork.connected(), "telegram": telegram.configured(),
+    return {"ok": True, "upwork_connected": upwork.connected(), "slack": slack.configured(),
             "claude": ai.client is not None, "last_poll_ok": db.kv_get("last_poll_ok")}
+
+
+@app.post("/slack/interact")
+async def slack_interact(request: Request, bg: BackgroundTasks):
+    body = await request.body()
+    if not slack.verify(request.headers, body):
+        raise HTTPException(401)
+    payload = json.loads(parse_qs(body.decode())["payload"][0])
+    if payload["type"] == "block_actions":
+        bg.add_task(on_action, payload)  # Slack needs an answer within 3s; do the work after
+    elif payload["type"] == "view_submission" and payload["view"]["callback_id"] == "redraft":
+        job_id, channel, ts = payload["view"]["private_metadata"].split("|")
+        text = payload["view"]["state"]["values"]["instr"]["text"]["value"]
+        bg.add_task(on_redraft, job_id, channel, ts, text)
+    return Response(status_code=200)
+
+
+@app.post("/slack/command")
+async def slack_command(request: Request):
+    body = await request.body()
+    if not slack.verify(request.headers, body):
+        raise HTTPException(401)
+    form = parse_qs(body.decode())
+    return JSONResponse({"response_type": "ephemeral", "text": command_reply(form.get("text", [""])[0])})
 
 
 @app.get("/oauth/upwork/start", dependencies=[Depends(auth)])
@@ -264,7 +267,7 @@ def oauth_start():
 @app.get("/oauth/upwork/callback")
 async def oauth_callback(code: str):
     await upwork.exchange_code(code)
-    await telegram.send("✅ Upwork connected. Polling starts within a minute.")
+    await slack.post(":white_check_mark: Upwork connected. Polling starts within a minute.")
     return RedirectResponse("/")
 
 
@@ -295,7 +298,7 @@ def dashboard():
     e = html.escape
     up, last = upwork.connected(), db.kv_get("last_poll_ok")
     status = (f'<span class="pill {"ok" if up else "bad"}">Upwork {"connected" if up else "not connected"}</span> '
-              f'<span class="pill {"ok" if telegram.configured() else "bad"}">Telegram</span> '
+              f'<span class="pill {"ok" if slack.configured() else "bad"}">Slack</span> '
               f'<span class="pill {"ok" if ai.client else "bad"}">Claude</span> '
               f'<span class="pill">last poll {f"{int(time.time() - last)}s ago" if last else "never"}</span>')
     connect = '' if up else ' <a class="btn" href="/oauth/upwork/start">Connect Upwork</a>'
@@ -303,18 +306,16 @@ def dashboard():
     rows = []
     for r in db.recent(80):
         s = r.get("scored", {})
-        stage = r.get("last_stage", "seen")
         detail = r.get("filtered", {}).get("reason") or s.get("reason") or r.get("error", {}).get("error") or ""
-        rows.append(f"<tr><td>{e(r['title'] or '')}</td><td>{s.get('score', '')}</td><td>{e(stage)}</td>"
-                    f"<td>{e(detail)}</td></tr>")
-    rules = e(RULES_PATH.read_text())
+        rows.append(f"<tr><td>{e(r['title'] or '')}</td><td>{s.get('score', '')}</td>"
+                    f"<td>{e(r.get('last_stage', 'seen'))}</td><td>{e(detail)}</td></tr>")
     kfiles = "".join(f'<li><a href="/knowledge/{e(str(p.relative_to(KNOWLEDGE_DIR)))}">{e(str(p.relative_to(KNOWLEDGE_DIR)))}</a></li>'
                      for p in sorted(KNOWLEDGE_DIR.rglob("*.md")))
     return _page(f"""<h1>Upwork Autopilot</h1><p>{status}{connect}</p>
 <p>Last 24h: seen {c.get('seen', 0)} · filtered {c.get('filtered', 0)} · scored {c.get('scored', 0)} ·
 drafted {c.get('drafted', 0)} · approved {c.get('approved', 0)} · sent {c.get('sent', 0)} · errors {c.get('error', 0)}</p>
 <h2>Recent jobs</h2><table><tr><th>Job</th><th>Score</th><th>Stage</th><th>Why</th></tr>{''.join(rows)}</table>
-<h2>Rules</h2><form method=post action=/rules><textarea name=rules rows=28>{rules}</textarea><p><button>Save rules</button></p></form>
+<h2>Rules</h2><form method=post action=/rules><textarea name=rules rows=28>{e(RULES_PATH.read_text())}</textarea><p><button>Save rules</button></p></form>
 <h2>Knowledge base</h2><ul>{kfiles}</ul><form method=post action=/knowledge/new><input name=path placeholder="case-studies/new-project.md"> <button>Add file</button></form>""")
 
 

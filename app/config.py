@@ -14,8 +14,9 @@ RULES_PATH = DATA_DIR / "rules.yaml"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
+SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "")
 UPWORK_CLIENT_ID = os.environ.get("UPWORK_CLIENT_ID", "")
 UPWORK_CLIENT_SECRET = os.environ.get("UPWORK_CLIENT_SECRET", "")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
