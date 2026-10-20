@@ -1,9 +1,14 @@
-# Live copy lives on the Render disk and is editable from the dashboard. This file only seeds first boot.
-# PLACEHOLDERS: replace searches and terms with yours.
+# Live copy lives on the Render disk and is editable from the dashboard. This file seeds it.
+# Searches use Upwork's search syntax: quotes for phrases, OR between alternatives.
 
-searches:                      # Upwork search expressions, each polled every cycle
-  - "automation OR integration"
-  - "AI agent OR LLM OR Claude"
+searches:
+  - '(excel OR "google sheets" OR "ms access" OR "microsoft access" OR vba) AND (quote OR quoting OR invoice OR invoicing OR "work order" OR estimating OR estimator)'
+  - '"google sheets" AND (automation OR "apps script" OR script OR macro OR menu OR database)'
+  - '"access database" OR "microsoft access" OR "ms access"'
+  - '"workflow automation" OR "business automation" OR "ai automation" OR "process automation"'
+  - '"estimating system" OR "cost estimating" OR "construction estimating" OR bluebeam OR "pricing database"'
+  - '"kpi dashboard" OR "operational reporting" OR "performance management" OR "process improvement" OR "business intelligence"'
+  - 'servicetitan OR "practice analytics" OR "healthcare analytics" OR "revenue cycle"'
 
 poll_seconds: 75               # 45 minimum; ~1,150 requests/day per search, Upwork allows 40,000
 score_threshold: 70            # only jobs scoring at or above this get a drafted proposal

@@ -6,6 +6,7 @@ Plus a small password-protected dashboard.
 """
 import asyncio
 import datetime as dt
+import hashlib
 import html
 import json
 import logging
@@ -60,6 +61,32 @@ async def process(job: dict) -> None:
     except Exception as e:  # noqa: BLE001 — one bad job must never stop the loop
         log.exception("process failed for %s", job["id"])
         db.log(job["id"], "error", {"error": str(e)[:500]})
+
+
+async def try_job(text: str) -> None:
+    """Score and draft a pasted job post regardless of filters and threshold, so you can judge the output.
+    No budget or client data comes with a paste, so those show as unknown."""
+    text = text.strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    titled = [ln[6:].strip() for ln in lines if ln.lower().startswith("title:")]
+    body = [ln for ln in lines if ln.lower() not in ("summary", "summary:", "description", "description:")]
+    title = (titled[0] if titled else body[0] if body else "Pasted job")[:120]
+    job = upwork.normalize({"id": "try-" + hashlib.sha1(text.encode()).hexdigest()[:10], "title": title,
+                            "description": text, "url": "https://www.upwork.com/nx/find-work/"}, source="manual")
+    db.save_job(job)
+    try:
+        scored = await ai.score(job)
+        db.log(job["id"], "scored", scored)
+        drafted = await ai.draft(job, scored)
+        db.log(job["id"], "drafted", drafted)
+        note = "" if scored["score"] >= load_rules().get("score_threshold", 70) else \
+            "\n_Below your threshold: live, this job would be logged but not drafted._"
+        blocks = slack.job_blocks(job, scored, drafted, decide=False)
+        blocks.insert(0, slack._text(f":test_tube: *Test run on a pasted post* (budget and client unknown){note}"))
+        await slack.post(f"Test: {title}", blocks)
+    except Exception as e:  # noqa: BLE001
+        log.exception("try_job failed")
+        await slack.post(f":warning: Test run failed: {str(e)[:300]}")
 
 
 async def ingest(jobs: list[dict]) -> int:
@@ -202,7 +229,8 @@ def command_reply(text: str) -> str:
                 f"threshold {load_rules().get('score_threshold', 70)}")
     if cmd == "digest":
         return digest_text()
-    return "`/autopilot status` · `digest` · `threshold 75` · `pause` · `resume`"
+    return ("`/autopilot status` · `digest` · `threshold 75` · `pause` · `resume` · "
+            "`try <paste a job post>` (scores and drafts it in the channel)")
 
 
 # ---------------------------------------------------------------- web
@@ -256,7 +284,20 @@ async def slack_command(request: Request):
     if not slack.verify(request.headers, body):
         raise HTTPException(401)
     form = parse_qs(body.decode())
-    return JSONResponse({"response_type": "ephemeral", "text": command_reply(form.get("text", [""])[0])})
+    text = form.get("text", [""])[0]
+    if text.lower().startswith("try"):
+        post = text[3:].strip()
+        if len(post) < 40:
+            return JSONResponse({"response_type": "ephemeral", "text": "Paste the whole job post after `try`."})
+        asyncio.create_task(try_job(post))
+        return JSONResponse({"response_type": "ephemeral", "text": "Scoring and drafting… the card lands in the channel in ~30s."})
+    return JSONResponse({"response_type": "ephemeral", "text": command_reply(text)})
+
+
+@app.post("/try", dependencies=[Depends(auth)])
+async def try_form(post: str = Form(...)):
+    asyncio.create_task(try_job(post))
+    return RedirectResponse("/?tried=1", status_code=303)
 
 
 @app.get("/oauth/upwork/start", dependencies=[Depends(auth)])
@@ -316,6 +357,7 @@ def dashboard():
     return _page(f"""<h1>Upwork Autopilot</h1><p>{status}{connect}</p>
 <p>Last 24h: seen {c.get('seen', 0)} · filtered {c.get('filtered', 0)} · scored {c.get('scored', 0)} ·
 drafted {c.get('drafted', 0)} · approved {c.get('approved', 0)} · sent {c.get('sent', 0)} · errors {c.get('error', 0)}</p>
+<h2>Try a job post</h2><form method=post action=/try><textarea name=post rows=6 placeholder="Paste any Upwork job post. The score and draft land in Slack in ~30 seconds."></textarea><p><button>Score and draft it</button></p></form>
 <h2>Recent jobs</h2><table><tr><th>Job</th><th>Score</th><th>Stage</th><th>Why</th></tr>{''.join(rows)}</table>
 <h2>Rules</h2><form method=post action=/rules><textarea name=rules rows=28>{e(RULES_PATH.read_text())}</textarea><p><button>Save rules</button></p></form>
 <h2>Knowledge base</h2><ul>{kfiles}</ul><form method=post action=/knowledge/new><input name=path placeholder="case-studies/new-project.md"> <button>Add file</button></form>""")

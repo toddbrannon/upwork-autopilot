@@ -77,6 +77,17 @@ def main_test():
         r = signed("/slack/command", urlencode({"command": "/autopilot", "text": "status"}), c)
         assert "threshold 75" in r.json()["text"]
 
+    post = "Summary\nNeed a program for a used tire store that supports workorders and locked invoice numbers."
+    asyncio.run(main.try_job(post))
+    test_card = [p for m, p in calls if m == "chat.postMessage" and "Test run on a pasted post" in json.dumps(p)]
+    assert test_card and "decide" not in json.dumps(test_card[-1]), "try_job card missing or has decision buttons"
+    assert test_card[-1]["text"].startswith("Test: Need a program for a used tire store"), test_card[-1]["text"]
+    with TestClient(main.app) as c:
+        r = signed("/slack/command", urlencode({"command": "/autopilot", "text": "try short"}), c)
+        assert "Paste the whole job post" in r.json()["text"]
+        r = signed("/slack/command", urlencode({"command": "/autopilot", "text": "try " + post}), c)
+        assert "Scoring and drafting" in r.json()["text"]
+
     stages = [s for s in ("approved", "sent", "outcome", "edited") if db.latest(job["id"], s) is not None]
     assert stages == ["approved", "sent", "outcome", "edited"], stages
     methods = [m for m, _ in calls]
