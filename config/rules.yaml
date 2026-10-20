@@ -1,0 +1,28 @@
+# Live copy lives on the Render disk and is editable from the dashboard. This file only seeds first boot.
+# PLACEHOLDERS: replace searches and terms with yours.
+
+searches:                      # Upwork search expressions, each polled every cycle
+  - "automation OR integration"
+  - "AI agent OR LLM OR Claude"
+
+poll_seconds: 75               # 45 minimum; ~1,150 requests/day per search, Upwork allows 40,000
+score_threshold: 70            # only jobs scoring at or above this get a drafted proposal
+max_drafts_per_day: 40         # hard cap on Sonnet drafts (cost guard)
+digest_hour: 8                 # local time (America/Chicago)
+followup_days: 5               # ask about the outcome this many days after you send
+
+filters:
+  payment_verified: true
+  min_hourly: 40               # hourly jobs: max of the client's range must reach this
+  min_fixed_budget: 500        # fixed-price jobs below this are dropped (unstated budgets pass)
+  max_proposals: 15
+  min_client_hires: 1          # a client passes with EITHER this many hires...
+  min_client_spent: 1000       # ...OR this much total spend
+  min_client_rating: 4.0
+  exclude_countries: []
+  include_terms: []            # empty = no include requirement
+  exclude_terms:
+    - unpaid test
+    - equity only
+    - wordpress theme
+    - data entry
