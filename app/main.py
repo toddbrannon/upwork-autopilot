@@ -91,7 +91,7 @@ async def try_job(text: str) -> None:
         await slack.post(f":warning: Test run failed: {str(e)[:300]}")
 
 
-async def check_claude_key() -> None:
+async def check_claude_key(notify: bool = True) -> None:
     """Free call that proves the API key works, so a bad key shows up at boot, not on the first job."""
     if not ai.client:
         db.kv_set("claude_key_check", "missing")
@@ -103,8 +103,9 @@ async def check_claude_key() -> None:
         status = getattr(e, "status_code", None)
         result = "invalid (Anthropic rejected the key)" if status == 401 else f"error: {str(e)[:120]}"
         db.kv_set("claude_key_check", result)
-        await slack.post(f":warning: Claude API key check failed: {result}. "
-                         "Paste a fresh key into Render → Environment → ANTHROPIC_API_KEY.")
+        if notify:
+            await slack.post(f":warning: Claude API key check failed: {result}. "
+                             "Paste a fresh key into Render → Environment → ANTHROPIC_API_KEY.")
 
 
 async def ingest(jobs: list[dict]) -> int:
@@ -275,7 +276,11 @@ def auth(creds: HTTPBasicCredentials = Depends(security)) -> None:
 
 
 @app.get("/health")
-def health():
+async def health():
+    # re-test a failing Claude key at most every 30s (listing models is free), so fixes show up without a redeploy
+    if db.kv_get("claude_key_check") != "ok" and time.time() - db.kv_get("claude_key_checked_at", 0) > 30:
+        db.kv_set("claude_key_checked_at", time.time())
+        await check_claude_key(notify=False)
     return {"ok": True, "upwork_connected": upwork.connected(), "slack": slack.configured(),
             "claude": ai.client is not None, "last_poll_ok": db.kv_get("last_poll_ok"),
             "knowledge_files": sorted(str(p.relative_to(KNOWLEDGE_DIR)) for p in KNOWLEDGE_DIR.rglob("*.md")),
