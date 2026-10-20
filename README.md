@@ -14,7 +14,7 @@ You paste and submit on Upwork yourself — that step is deliberately never auto
    - `SLACK_CHANNEL_ID` — make a channel (e.g. #upwork-jobs), `/invite @Upwork Autopilot`,
      copy the ID from the channel's details panel
    - `DASHBOARD_PASSWORD` — anything long; username is ignored
-   - `PUBLIC_BASE_URL` — e.g. `https://upwork-autopilot.onrender.com`
+   - `PUBLIC_BASE_URL` — e.g. `https://upwork-autopilot-qimn.onrender.com`
    - `UPWORK_CLIENT_ID`, `UPWORK_CLIENT_SECRET` — after Upwork approves your API key.
      Set the key's callback URL to `PUBLIC_BASE_URL/oauth/upwork/callback`.
 3. **Connect Upwork**: open the dashboard → "Connect Upwork" → approve on Upwork.

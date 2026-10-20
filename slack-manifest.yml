@@ -1,5 +1,5 @@
 # Paste into api.slack.com/apps → Create New App → From an app manifest.
-# If your Render URL differs from upwork-autopilot.onrender.com, change the two URLs below.
+# If your Render URL differs from upwork-autopilot-qimn.onrender.com, change the two URLs below.
 display_information:
   name: Upwork Autopilot
   description: New Upwork jobs, scored and drafted, waiting for your approval.
@@ -10,7 +10,7 @@ features:
     always_online: true
   slash_commands:
     - command: /autopilot
-      url: https://upwork-autopilot.onrender.com/slack/command
+      url: https://upwork-autopilot-qimn.onrender.com/slack/command
       description: Status, digest, threshold, pause, resume
       usage_hint: status | digest | threshold 75 | pause | resume
       should_escape: false
@@ -22,7 +22,7 @@ oauth_config:
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://upwork-autopilot.onrender.com/slack/interact
+    request_url: https://upwork-autopilot-qimn.onrender.com/slack/interact
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
