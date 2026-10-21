@@ -16,6 +16,7 @@ RULES_PATH = DATA_DIR / "rules.yaml"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip().strip("\'\"")
+ANTHROPIC_WORKSPACE_ID = os.environ.get("ANTHROPIC_WORKSPACE_ID", "").strip().strip("\'\"")  # only for keys not scoped to one workspace
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip().strip("\'\"")
 SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "").strip().strip("\'\"")
 SLACK_CHANNEL_ID = os.environ.get("SLACK_CHANNEL_ID", "").strip().strip("\'\"")

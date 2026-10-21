@@ -101,7 +101,15 @@ async def check_claude_key(notify: bool = True) -> None:
         db.kv_set("claude_key_check", "ok")
     except Exception as e:  # noqa: BLE001
         status = getattr(e, "status_code", None)
-        result = "invalid (Anthropic rejected the key)" if status == 401 else f"error: {str(e)[:120]}"
+        body = getattr(e, "body", None)
+        detail = (body.get("error", {}).get("message") if isinstance(body, dict) else None) or str(e)
+        if status == 401:
+            result = f"rejected by Anthropic (401): {detail[:160]}"
+        elif "anthropic-workspace-id" in detail:
+            result = ("key is not tied to one workspace: set ANTHROPIC_WORKSPACE_ID in Render, "
+                      "or create the key for a single workspace")
+        else:
+            result = f"error {status}: {detail[:160]}"
         db.kv_set("claude_key_check", result)
         if notify:
             await slack.post(f":warning: Claude API key check failed: {result}. "

@@ -22,6 +22,8 @@ services:
       # Secrets: values are pasted by you in the Render dashboard, never committed.
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: ANTHROPIC_WORKSPACE_ID
+        sync: false          # only needed if the key is not scoped to a single workspace
       - key: SLACK_BOT_TOKEN
         sync: false          # xoxb-... from the Slack app's OAuth & Permissions page
       - key: SLACK_SIGNING_SECRET

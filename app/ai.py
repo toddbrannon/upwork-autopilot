@@ -7,10 +7,24 @@ import re
 from anthropic import AsyncAnthropic
 
 from . import db
-from .config import ANTHROPIC_API_KEY, DRAFTER_MODEL, SCORER_MODEL, load_knowledge
+from .config import ANTHROPIC_API_KEY, ANTHROPIC_WORKSPACE_ID, DRAFTER_MODEL, SCORER_MODEL, load_knowledge
 
 log = logging.getLogger("ai")
-client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+
+
+def _make_client() -> AsyncAnthropic | None:
+    """Legacy workspace keys (sk-ant-api...) go in x-api-key. Personal and service-account keys
+    (sk-ant-usr..., sk-ant-svc...) are sent as Authorization: Bearer, per Anthropic's auth docs.
+    A key not scoped to one workspace also needs the anthropic-workspace-id header."""
+    if not ANTHROPIC_API_KEY:
+        return None
+    headers = {"anthropic-workspace-id": ANTHROPIC_WORKSPACE_ID} if ANTHROPIC_WORKSPACE_ID else None
+    if ANTHROPIC_API_KEY.startswith("sk-ant-api"):
+        return AsyncAnthropic(api_key=ANTHROPIC_API_KEY, default_headers=headers)
+    return AsyncAnthropic(api_key=None, auth_token=ANTHROPIC_API_KEY, default_headers=headers)
+
+
+client = _make_client()
 
 SCORER_RULES = """You screen Upwork job posts for one freelancer, whose knowledge base is above.
 Score how worth bidding this job is for THEM, 0-100, with this rubric:
