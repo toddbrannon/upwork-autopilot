@@ -286,7 +286,17 @@ async def health():
             "knowledge_files": sorted(str(p.relative_to(KNOWLEDGE_DIR)) for p in KNOWLEDGE_DIR.rglob("*.md")),
             "min_hourly": load_rules().get("filters", {}).get("min_hourly"),
             "searches": len(load_rules().get("searches", [])),
-            "claude_key": db.kv_get("claude_key_check", "not checked")}
+            "claude_key": db.kv_get("claude_key_check", "not checked"),
+            "claude_key_shape": _key_shape()}
+
+
+def _key_shape() -> str:
+    """Safe fingerprint: how the key starts, its length, and characters that don't belong. Never the key."""
+    from .config import ANTHROPIC_API_KEY as k
+    if not k:
+        return "empty"
+    odd = sorted({c for c in k if not (c.isalnum() or c in "-_")})
+    return f"starts '{k[:10]}', {len(k)} chars" + (f", unexpected characters {odd}" if odd else "")
 
 
 @app.post("/slack/interact")
@@ -368,7 +378,8 @@ def dashboard():
     up, last = upwork.connected(), db.kv_get("last_poll_ok")
     status = (f'<span class="pill {"ok" if up else "bad"}">Upwork {"connected" if up else "not connected"}</span> '
               f'<span class="pill {"ok" if slack.configured() else "bad"}">Slack</span> '
-              f'<span class="pill {"ok" if db.kv_get("claude_key_check") == "ok" else "bad"}">Claude key: {e(str(db.kv_get("claude_key_check", "not checked")))}</span> '
+              f'<span class="pill {"ok" if db.kv_get("claude_key_check") == "ok" else "bad"}">Claude key: {e(str(db.kv_get("claude_key_check", "not checked")))}</span> 
+              f'<span class="pill">key {e(_key_shape())}, ends …{e(__import__("app.config", fromlist=["x"]).ANTHROPIC_API_KEY[-4:])}</span> '
               f'<span class="pill">last poll {f"{int(time.time() - last)}s ago" if last else "never"}</span>')
     connect = '' if up else ' <a class="btn" href="/oauth/upwork/start">Connect Upwork</a>'
     c = db.counts_since(time.time() - 86400)
