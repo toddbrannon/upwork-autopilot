@@ -69,8 +69,17 @@ def _job_text(job: dict) -> str:
     return (f"TITLE: {job['title']}\nBUDGET: {budget}\nEXPERIENCE: {job.get('experience')}\n"
             f"DURATION: {job.get('duration')}\nPROPOSALS SO FAR: {job.get('proposals')}\n"
             f"SKILLS: {', '.join(job.get('skills') or [])}\n"
-            f"CLIENT: verified={c.get('payment_verified')} hires={c.get('hires')} spent={c.get('spent')} "
-            f"rating={c.get('rating')} country={c.get('country')}\n\nDESCRIPTION:\n{job['description']}")
+
+            + (f"CLIENT: verified={c.get('payment_verified')} hires={c.get('hires')} spent={c.get('spent')} "
+               f"rating={c.get('rating')} country={c.get('country')}\n" if job.get("source") != "manual" else
+               "CLIENT AND BUDGET: unknown (pasted for a test run). Score client quality and budget as neutral, "
+               "not as red flags; judge the fit on the description.\n")
+            + f"\nDESCRIPTION:\n{job['description']}")
+
+
+def _text(msg) -> str:
+    """Join the reply's text blocks; newer models may put thinking blocks first."""
+    return "".join(getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text")
 
 
 def _json(text: str) -> dict:
@@ -89,9 +98,9 @@ def _cost(model: str, usage) -> float:
 
 async def score(job: dict) -> dict:
     msg = await client.messages.create(
-        model=SCORER_MODEL, max_tokens=400, system=_system(SCORER_RULES),
+        model=SCORER_MODEL, max_tokens=3000, system=_system(SCORER_RULES),
         messages=[{"role": "user", "content": _job_text(job)}])
-    out = _json(msg.content[0].text)
+    out = _json(_text(msg))
     out["score"] = int(out.get("score", 0))
     out["cost"] = round(_cost(SCORER_MODEL, msg.usage), 5)
     return out
@@ -105,8 +114,8 @@ async def draft(job: dict, scored: dict, instructions: str | None = None, previo
     if previous and instructions:
         user += f"\n\nYOUR PREVIOUS DRAFT:\n{previous}\n\nREVISE IT PER THE FREELANCER'S INSTRUCTION:\n{instructions}"
     msg = await client.messages.create(
-        model=DRAFTER_MODEL, max_tokens=1500, system=_system(DRAFTER_RULES),
+        model=DRAFTER_MODEL, max_tokens=6000, system=_system(DRAFTER_RULES),
         messages=[{"role": "user", "content": user}])
-    out = _json(msg.content[0].text)
+    out = _json(_text(msg))
     out["cost"] = round(_cost(DRAFTER_MODEL, msg.usage), 5)
     return out
